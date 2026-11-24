@@ -59,6 +59,12 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 #home summary span{color:var(--soft);font:13px "Segoe UI",Arial,sans-serif}
 #home ul{margin:0 0 12px;padding:0 18px 0 0;font-size:.86em;line-height:1.7}
 .sig{max-width:780px;margin:22px auto 0;background:var(--box);border:1px solid var(--line);border-right:4px solid var(--accent);border-radius:10px;padding:12px 16px;font:15px/1.7 "Segoe UI",Arial,sans-serif}
+body.locked header,body.locked aside,body.locked main{display:none}
+#gate{position:fixed;inset:0;margin:auto;height:max-content;background:var(--paper);padding:30px 26px;border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,.12);width:min(360px,92vw);text-align:center;font:17px/1.6 "Segoe UI",Arial,sans-serif}
+#gate h1{margin:0 0 6px;font-size:24px}#gate p{margin:0 0 18px;color:var(--soft);font-size:15px}
+#gate input{width:100%;padding:12px 14px;font-size:18px;border:2px solid var(--line);border-radius:10px;text-align:center;direction:ltr;background:var(--paper);color:var(--ink)}
+#gate button{margin-top:14px;width:100%;padding:12px;font-size:17px;font-weight:700;border:0;border-radius:10px;background:var(--accent);color:#fff}
+#gErr{color:#dc2626;min-height:24px;margin-top:10px;font-size:15px}
 #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--paper);font:14px "Segoe UI",Arial,sans-serif;padding:8px 16px;border-radius:20px;opacity:0;transition:opacity .2s;pointer-events:none}
 @media (max-width:900px){aside{width:82%}main{margin-right:0;padding:0 0 60px}#book,#home{padding:20px 18px 30px}header .hide{display:none}#cover .n{font-size:1.5em}.sig{margin:22px 10px 0}}
 @media print{header,aside,#src,.edge,.sig{display:none}main{margin:0;padding:0}#book{border:0;box-shadow:none}}
@@ -82,8 +88,10 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
   <div id="home" hidden><h1>מאגר ספרי הקודש – המקורות</h1><div class="lead">הטקסט המלא של הספרים שבחיפוש. לשאלות במקורות: <a href="https://kvatzim.kvatzim.workers.dev/s/">חיפוש במאגר ספרי הקודש</a></div><input id="bf" placeholder="חיפוש ספר לפי שם"><div id="cats"><div class="edge">טוען את רשימת הספרים…</div></div></div>
   <div class="sig">📚 עוד חומרי לימוד תורניים – חינם, במאגר הקול החמישי: <a href="https://www.kol-toda.co.il/search/">https://www.kol-toda.co.il/search/</a><br>המאגר המלא: <a href="https://www.kol-toda.co.il/">https://www.kol-toda.co.il/</a></div>
 </main>
+<form id="gate" autocomplete="off" hidden><h1>🔒 דף מוגן</h1><p>הכניסו את קוד הגישה</p><input id="gKey" type="password" aria-label="קוד גישה"><button>כניסה</button><div id="gErr"></div></form>
 <div id="toast"></div>
 <script>
+const CFG = {"lock": false, "data": "mekorot-", "books": "books.json", "name": "מאגר ספרי הקודש – המקורות"};      // export.py: {lock, data, books, name} ובספרייה הנעולה גם s (מלח), r (סיבובים), chk (בדיקת הקוד)
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const store = { get(k, d){ try { return localStorage.getItem(k) ?? d } catch(e){ return d } }, set(k, v){ try { localStorage.setItem(k, v) } catch(e){} } };
@@ -104,35 +112,65 @@ $('bMinus').onclick = () => { fs = Math.max(14, fs - 1); store.set('fs', fs); lo
 $('bTheme').onclick = () => { theme = themes[(themes.indexOf(theme) + 1) % themes.length]; store.set('theme', theme); look(); };
 
 // קובץ נתונים דחוס (gzip). אם השרת כבר פתח את הדחיסה, קוראים כמו שהוא
+let KEY = null;               // מפתח הפענוח (רק בספרייה הנעולה): PBKDF2-SHA256 + AES-GCM, כמו בספרייה הנעולה gan-naul
+const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function unlock(code){
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(code), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({name: 'PBKDF2', salt: b64(CFG.s), iterations: CFG.r, hash: 'SHA-256'}, base, {name: 'AES-GCM', length: 256}, false, ['decrypt']);
+  const c = b64(CFG.chk);
+  await crypto.subtle.decrypt({name: 'AES-GCM', iv: c.slice(0, 12)}, key, c.slice(12));      // קוד שגוי: נזרקת שגיאה
+  KEY = key;
+}
 async function gz(url){
   const r = await fetch(url); if (!r.ok) throw new Error('HTTP ' + r.status);
-  const buf = new Uint8Array(await r.arrayBuffer());
+  let buf = new Uint8Array(await r.arrayBuffer());
+  if (KEY) buf = new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv: buf.slice(0, 12)}, KEY, buf.slice(12)));
   if (buf[0] !== 0x1f || buf[1] !== 0x8b) return JSON.parse(new TextDecoder().decode(buf));
   return new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).json();
 }
 
-if (!BK) home(); else book().catch(e => { $('book').hidden = false; $('top').textContent = 'הספר לא נטען (' + e.message + '). '; $('toc').innerHTML = ''; });
+const start = () => { if (!BK) home(); else book().catch(e => { $('book').hidden = false; $('top').textContent = 'הספר לא נטען (' + e.message + '). '; $('toc').innerHTML = ''; }); };
+if (!CFG.lock) start(); else gate();
+
+// ----- מסך הנעילה (הספרייה הנעולה): קוד גישה, נשמר רק ללשונית הזאת
+async function gate(){
+  const g = $('gate'), e = $('gErr'); let saved = [];
+  try { saved = [sessionStorage.getItem('kzs'), sessionStorage.getItem('kz')].filter(Boolean); } catch(_){}
+  for (const c of saved) { try { await unlock(c); return start(); } catch(_){} }
+  g.hidden = false; document.body.classList.add('locked'); $('gKey').focus();
+  if (!window.crypto || !crypto.subtle) e.textContent = 'הדפדפן לא תומך בפתיחת הדף';
+  $('gForm').onsubmit = async ev => {
+    ev.preventDefault(); e.textContent = 'פותח…';
+    const code = $('gKey').value.trim();
+    try { await unlock(code); } catch(_) { e.textContent = 'קוד שגוי'; return; }
+    try { sessionStorage.setItem('kzs', code); } catch(_){}
+    g.hidden = true; document.body.classList.remove('locked'); start();
+  };
+}
 
 // ----- דף הבית: רשימת הספרים לפי תחום
 async function home(){
   document.body.classList.add('home'); $('home').hidden = false;
+  if (CFG.lock) { document.title = CFG.name; $('title').textContent = CFG.name; $('home').querySelector('h1').textContent = CFG.name; $('home').querySelector('.lead').textContent = 'הטקסט המלא של הספרים שבמאגרים. לשימוש אישי בלבד.'; }
   for (const id of ['bToc', 'bGo', 'bCite', 'bHome']) $(id).style.display = 'none';
-  const list = await (await fetch('books.json')).json();      // [מזהה, שם, תחום, קטעים]
+  const list = CFG.books.endsWith('.gz') ? await gz(CFG.books) : await (await fetch(CFG.books)).json();      // [מזהה, שם, תחום, קטעים]
   $('where').textContent = list.length.toLocaleString() + ' ספרים';
   function draw(){
     const f = $('bf').value.trim(), cats = new Map();
     for (const b of list) if (!f || b[1].includes(f)) { if (!cats.has(b[2])) cats.set(b[2], []); cats.get(b[2]).push(b); }
-    let h = '';
-    for (const [c, bs] of cats) h += '<details' + (f ? ' open' : '') + '><summary>' + esc(c) + ' <span>(' + bs.length + ')</span></summary><ul>'
-      + bs.slice(0, f ? 300 : 5000).map(b => '<li><a href="?b=' + b[0] + '">' + esc(b[1]) + '</a></li>').join('') + '</ul></details>';
-    $('cats').innerHTML = h || '<div class="edge">לא נמצא ספר בשם הזה</div>';
+    const MAX = f ? 300 : 3000;
+    const fill = (ul, bs) => { ul.innerHTML = bs.slice(0, MAX).map(b => '<li><a href="?b=' + b[0] + '">' + esc(b[1]) + '</a></li>').join('')
+      + (bs.length > MAX ? '<li style="list-style:none;color:var(--soft)">ועוד ' + (bs.length - MAX).toLocaleString() + ' ספרים. חפשו לפי שם בתיבה שלמעלה.</li>' : ''); };
+    $('cats').innerHTML = [...cats].map(([c, bs]) => '<details><summary>' + esc(c) + ' <span>(' + bs.length.toLocaleString() + ')</span></summary><ul></ul></details>').join('') || '<div class="edge">לא נמצא ספר בשם הזה</div>';
+    [...$('cats').children].forEach((d, i) => { if (d.tagName !== 'DETAILS') return; const bs = [...cats.values()][i];      // הרשימה מתמלאת רק כשפותחים את התחום
+      d.ontoggle = () => { if (d.open && !d.dataset.full) { d.dataset.full = 1; fill(d.querySelector('ul'), bs); } }; if (f) d.open = true; });
   }
   $('bf').oninput = draw; draw();
 }
 
 // ----- ספר
 async function book(){
-  const DATA = new URL('../mekorot-' + BK[1] + '/b/' + BK[2] + '/', location.href).href;
+  const DATA = new URL('../' + CFG.data + BK[1] + '/b/' + BK[2] + '/', location.href).href;
   const M = await gz(DATA + 'm.json.gz');
   const I = { lo: 0, hi: M.n - 1, target: Math.min(Math.max(0, +(Q.get('p') || 0) | 0), M.n - 1), title: M.t };
   const hasTarget = Q.has('p');
@@ -153,14 +191,15 @@ async function book(){
   if (store.get('toc', innerWidth > 900 ? '1' : '0') === '0') document.body.classList.add('notoc');
   $('bToc').onclick = () => { document.body.classList.toggle('notoc'); store.set('toc', document.body.classList.contains('notoc') ? '0' : '1'); };
   if (!hasTarget) $('bGo').style.display = 'none';
-  document.title = M.t + ' – מאגר ספרי הקודש';
+  document.title = M.t + ' – ' + CFG.name.split(' – ')[0];
   $('title').textContent = M.t;
   $('where').textContent = M.c.replace(/_/g, ' ');
-  { const p = M.t.split(' – '); $('cKind').textContent = M.c.replace(/_/g, ' '); $('cName').textContent = p[0]; $('cSub').textContent = p.slice(1).join(' – '); }
+  { const p = M.t.split(' – '); $('cKind').textContent = CFG.lock && M.corp ? M.corp : M.c.replace(/_/g, ' '); $('cName').textContent = p[0]; $('cSub').textContent = p.slice(1).join(' – '); }
   { // שורת הקרדיט למהדורה
     const safe = u => /^https?:\/\//.test(u) ? u : '';
     const vers = (M.ver || []).map(v => safe(v[1]) ? '<a target="_blank" rel="noopener" href="' + esc(v[1]) + '">' + esc(v[0]) + '</a>' : esc(v[0] + (v[1] ? ' (' + v[1] + ')' : ''))).join(' · ');
-    $('src').innerHTML = (vers ? 'המהדורה: ' + vers + '<br>' : '') + 'הטקסט באדיבות ' + (safe(M.sef) ? '<a target="_blank" rel="noopener" href="' + esc(M.sef) + '">ספריא</a>' : 'ספריא') + ', לפי רישיון המהדורה.';
+    if (CFG.lock) $('src').innerHTML = esc(M.corp || '') + (safe(M.url || '') ? ' · <a target="_blank" rel="noopener" href="' + esc(M.url) + '">המקור ברשת</a>' : '');
+    else $('src').innerHTML = (vers ? 'המהדורה: ' + vers + '<br>' : '') + 'הטקסט באדיבות ' + (safe(M.sef) ? '<a target="_blank" rel="noopener" href="' + esc(M.sef) + '">ספריא</a>' : 'ספריא') + ', לפי רישיון המהדורה.';
   }
 
   function html(c){
